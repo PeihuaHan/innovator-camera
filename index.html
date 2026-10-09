@@ -29,7 +29,7 @@
 </div>
 
 <div id="controls">
-  <button id="stretchBtn">Stretch: Off</button>
+  <button id="stretchBtn">Keep ratio: On</button>
   <button id="fsBtn">Fullscreen</button>
   <button id="logoutBtn">Log out</button>
 </div>
@@ -143,7 +143,7 @@ document.getElementById('logoutBtn').addEventListener('click', () => {
 const stretchBtn = document.getElementById('stretchBtn');
 function applyStretch(on) {
   document.body.classList.toggle('stretch', on);
-  stretchBtn.textContent = 'Stretch: ' + (on ? 'On' : 'Off');
+  stretchBtn.textContent = 'Keep ratio: ' + (on ? 'Off' : 'On');
   localStorage.setItem('innovatorStretch', on ? '1' : '0');
 }
 stretchBtn.addEventListener('click', () => applyStretch(!document.body.classList.contains('stretch')));
