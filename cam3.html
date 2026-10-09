@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Innovator Camera 3</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; }
+  #row { display: flex; width: 100vw; height: 100vh; }
+  #row video { flex: 1 1 0; min-width: 0; height: 100%; object-fit: contain; background: #000; display: block; }
+  body.stretch #row video { object-fit: fill; }
+  #controls { position: fixed; top: 10px; right: 10px; display: flex; gap: 6px; z-index: 10; opacity: .25; transition: opacity .2s; }
+  #controls:hover { opacity: 1; }
+  button { background: #222; color: #fff; border: 1px solid #555; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 14px; }
+  button:hover { background: #333; }
+  #login { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.85); z-index: 20; }
+  #login form { background: #1a1a1a; padding: 24px; border-radius: 10px; display: flex; flex-direction: column; gap: 10px; min-width: 260px; color: #eee; }
+  #login input { padding: 8px; border-radius: 6px; border: 1px solid #555; background: #000; color: #fff; font-size: 14px; }
+  #login label { font-size: 13px; display: flex; gap: 6px; align-items: center; }
+  .hidden { display: none !important; }
+  #status { position: fixed; bottom: 8px; left: 8px; color: #aaa; font-size: 12px; z-index: 10; }
+</style>
+</head>
+<body>
+<div id="row">
+  <video id="v1" autoplay muted playsinline></video>
+</div>
+
+<div id="controls">
+  <button id="stretchBtn">Keep ratio: On</button>
+  <button id="fsBtn">Fullscreen</button>
+  <button id="logoutBtn">Log out</button>
+</div>
+<div id="status"></div>
+
+<div id="login" class="hidden">
+  <form id="loginForm">
+    <strong>Camera login</strong>
+    <input id="user" placeholder="Username" autocomplete="username" required>
+    <input id="pass" type="password" placeholder="Password" autocomplete="current-password" required>
+    <label><input type="checkbox" id="remember" checked> Remember on this device</label>
+    <button type="submit">Connect</button>
+  </form>
+</div>
+
+<script>
+const BASE = 'https://fjordlab-test.norwayeast.cloudapp.azure.com/innovator/';
+const CAMS = ['cam3'];
+const KEY = 'innovatorCamAuth';
+const statusEl = document.getElementById('status');
+const state = {}; // per-camera status
+let auth = null;
+const pcs = {};
+
+function setStatus(cam, s) {
+  state[cam] = s;
+  statusEl.textContent = CAMS.map(c => `${c}: ${state[c] || '-'}`).join('  ·  ');
+}
+
+function loadAuth() {
+  return localStorage.getItem(KEY) || sessionStorage.getItem(KEY);
+}
+
+function showLogin() { document.getElementById('login').classList.remove('hidden'); }
+
+async function connect(cam, video) {
+  if (pcs[cam]) pcs[cam].close();
+  setStatus(cam, 'connecting');
+  const pc = new RTCPeerConnection();
+  pcs[cam] = pc;
+  pc.addTransceiver('video', { direction: 'recvonly' });
+  pc.addTransceiver('audio', { direction: 'recvonly' });
+  pc.ontrack = e => { if (e.streams[0]) video.srcObject = e.streams[0]; };
+  pc.onconnectionstatechange = () => {
+    setStatus(cam, pc.connectionState);
+    if (['failed', 'disconnected', 'closed'].includes(pc.connectionState) && pcs[cam] === pc) {
+      retry(cam, video);
+    }
+  };
+
+  try {
+    await pc.setLocalDescription(await pc.createOffer());
+    // Wait for ICE gathering (max 2s) so the offer contains candidates
+    await new Promise(res => {
+      if (pc.iceGatheringState === 'complete') return res();
+      const t = setTimeout(res, 2000);
+      pc.addEventListener('icegatheringstatechange', () => {
+        if (pc.iceGatheringState === 'complete') { clearTimeout(t); res(); }
+      });
+    });
+
+    const r = await fetch(`${BASE}${cam}/whep`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/sdp', 'Authorization': 'Basic ' + auth },
+      body: pc.localDescription.sdp,
+    });
+    if (r.status === 401) {
+      pc.close();
+      setStatus(cam, 'unauthorized');
+      localStorage.removeItem(KEY); sessionStorage.removeItem(KEY);
+      showLogin();
+      return;
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
+  } catch (err) {
+    console.error(cam, err);
+    setStatus(cam, 'error');
+    if (pcs[cam] === pc) retry(cam, video);
+  }
+}
+
+function retry(cam, video) {
+  const pc = pcs[cam];
+  pcs[cam] = null;
+  if (pc) pc.close();
+  setTimeout(() => { if (!pcs[cam] && auth) connect(cam, video); }, 3000);
+}
+
+function start() {
+  CAMS.forEach((cam, i) => connect(cam, document.getElementById('v' + (i + 1))));
+}
+
+document.getElementById('loginForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const u = document.getElementById('user').value;
+  const p = document.getElementById('pass').value;
+  auth = btoa(unescape(encodeURIComponent(u + ':' + p)));
+  (document.getElementById('remember').checked ? localStorage : sessionStorage).setItem(KEY, auth);
+  document.getElementById('login').classList.add('hidden');
+  start();
+});
+
+document.getElementById('logoutBtn').addEventListener('click', () => {
+  localStorage.removeItem(KEY); sessionStorage.removeItem(KEY);
+  auth = null;
+  Object.keys(pcs).forEach(k => { if (pcs[k]) pcs[k].close(); pcs[k] = null; });
+  showLogin();
+});
+
+const stretchBtn = document.getElementById('stretchBtn');
+function applyStretch(on) {
+  document.body.classList.toggle('stretch', on);
+  stretchBtn.textContent = 'Keep ratio: ' + (on ? 'Off' : 'On');
+  localStorage.setItem('innovatorStretchCam3', on ? '1' : '0');
+}
+stretchBtn.addEventListener('click', () => applyStretch(!document.body.classList.contains('stretch')));
+applyStretch(localStorage.getItem('innovatorStretchCam3') === '1');
+
+document.getElementById('fsBtn').addEventListener('click', () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen();
+});
+
+auth = loadAuth();
+if (auth) start(); else showLogin();
+</script>
+</body>
+</html>
